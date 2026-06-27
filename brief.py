@@ -46,6 +46,8 @@ def send_email(body):
     print("Email sent successfully.")
 
 if __name__ == "__main__":
+    print(f"GMAIL_USER: '{os.environ.get('GMAIL_USER', 'NOT SET')}'")
+    print(f"APP_PASSWORD length: {len(os.environ.get('GMAIL_APP_PASSWORD', ''))}")
     print("Generating brief...")
     brief = generate_brief()
     print("Sending email...")
