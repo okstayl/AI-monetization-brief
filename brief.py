@@ -6,15 +6,28 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import date
 
-PROMPT = """Produce a daily brief on AI monetization, value chain, and pricing news, covering a mix of business and technical topics. Research using your knowledge and reasoning for current trends.
+TODAY = date.today().strftime("%B %d, %Y")
+
+MODEL = "claude-opus-4-8"
+
+# Web search is a server-side tool: Claude decides when to search, the API
+# runs the query and hands results back to Claude, and this can repeat
+# several times in one request before Claude writes the final brief.
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 20}
+
+PROMPT = f"""Produce a daily brief on AI monetization, value chain, and pricing news, covering a mix of business and technical topics.
+
+Today's date is {TODAY}. Use the web search tool to find current news and analysis — do not rely on memory for anything time-sensitive, since prices, deals, and earnings figures change constantly. Search with varied, specific terms (e.g. "AI monetization news", "AI pricing model announcement", "AI value chain economics", "AI infrastructure margin", "enterprise AI ROI", "inference cost 2026") and include the current year in queries for recency. Run enough searches to cover all six sections below with real, dated news rather than generalities.
+
 Structure the brief with these sections:
 1. Headline roundup (3-5 items): latest news on AI pricing models, monetization announcements, earnings/margin commentary from major AI labs and infra providers.
 2. Value chain spotlight: rotate through layers (compute/infra, model providers, platform/tooling, application layer, end-user/consumer), tracking where value and margin are concentrating.
 3. Pricing model watch: usage-based vs. subscription vs. outcome-based vs. hybrid pricing trends; notable pricing changes from vendors (OpenAI, Anthropic, Google, Microsoft, etc.).
 4. Business deep dive: one focused topic per day (e.g. unit economics of inference, enterprise AI ROI data, agentic pricing, API cost trends).
 5. Technical deep dive: one focused topic per day (e.g. inference cost optimization, GPU/compute economics, model efficiency vs. pricing tradeoffs).
-6. Quick links: 2-3 additional topics worth a skim.
-Each section should include a 1-2 sentence summary. Keep the tone concise and direct, minimal fluff. Format in Markdown."""
+6. Quick links: 2-3 additional articles worth a skim.
+
+Each section should include a 1-2 sentence summary followed by source links formatted as Markdown hyperlinks, e.g. [Title](URL). Keep the tone concise and direct, minimal fluff. Format the whole brief in Markdown, with a level-2 heading (##) per section."""
 
 HTML_WRAPPER = """\
 <!DOCTYPE html>
@@ -144,12 +157,31 @@ HTML_WRAPPER = """\
 
 def generate_brief():
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    message = client.messages.create(
-        model="claude-opus-4-8",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": PROMPT}]
+    messages = [{"role": "user", "content": PROMPT}]
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        messages=messages,
+        tools=[WEB_SEARCH_TOOL],
     )
-    return message.content[0].text
+
+    # Web search runs server-side and can loop through several searches within
+    # one request. Very long research turns can come back with stop_reason
+    # "pause_turn" instead of finishing — when that happens, send the paused
+    # assistant turn back unchanged so Claude can keep going.
+    while response.stop_reason == "pause_turn":
+        messages.append({"role": "assistant", "content": response.content})
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=4096,
+            messages=messages,
+            tools=[WEB_SEARCH_TOOL],
+        )
+
+    # The response interleaves text blocks with server_tool_use /
+    # web_search_tool_result blocks; only the text blocks are the brief itself.
+    return "\n\n".join(block.text for block in response.content if block.type == "text")
 
 
 def markdown_to_html(md_text):
@@ -158,8 +190,7 @@ def markdown_to_html(md_text):
         md_text,
         extensions=["extra", "nl2br"]
     )
-    today = date.today().strftime("%B %d, %Y")
-    return HTML_WRAPPER.format(date=today, body=body_html)
+    return HTML_WRAPPER.format(date=TODAY, body=body_html)
 
 
 def send_email(body_md):
@@ -167,11 +198,10 @@ def send_email(body_md):
     password = os.environ["GMAIL_APP_PASSWORD"]
     recipient = os.environ["GMAIL_USER"]
 
-    today = date.today().strftime("%B %d, %Y")
     body_html = markdown_to_html(body_md)
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"AI Monetization Brief — {today}"
+    msg["Subject"] = f"AI Monetization Brief — {TODAY}"
     msg["From"] = sender
     msg["To"] = recipient
 
